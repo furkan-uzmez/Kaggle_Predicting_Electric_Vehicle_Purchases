@@ -1,0 +1,32 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Local agent and workflow state
+.agent/
+.claude/
+skill-observations/
+commit_history/
+
+# Local datasets and generated experiment artifacts
+data/
+outputs/
+ensemble/
+catboost_info/
+
+# Local secrets and editor files
+.env
+.env.*
+*.pem
+*.key
+.idea/
+.vscode/
+.DS_Store
+*.log
