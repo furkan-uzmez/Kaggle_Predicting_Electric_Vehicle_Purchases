@@ -1,0 +1,27 @@
+project:
+  seed: 42
+
+model:
+  name: logistic
+
+data:
+  train: data/playground-series-s6e9/train.csv
+  test: data/playground-series-s6e9/test.csv
+  sample_submission: data/playground-series-s6e9/sample_submission.csv
+  id_column: id
+  target_column: Will_Buy_EV
+
+validation:
+  strategy: repeated_stratified_kfold
+  n_splits: 5
+  n_repeats: 3
+  random_state: 42
+
+metrics:
+  primary: roc_auc
+  guardrails:
+    - average_precision
+    - log_loss
+
+outputs:
+  root: outputs
