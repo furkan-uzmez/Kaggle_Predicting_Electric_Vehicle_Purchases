@@ -1,0 +1,87 @@
+project:
+  name: kaggle_ev_purchase_final
+  seed: 42
+data:
+  train: data/playground-series-s6e9/train.csv
+  test: data/playground-series-s6e9/test.csv
+  sample_submission: data/playground-series-s6e9/sample_submission.csv
+  id_column: id
+  target_column: Will_Buy_EV
+validation:
+  strategy: repeated_stratified_kfold
+  n_splits: 5
+  n_repeats: 3
+  random_state: 42
+metrics:
+  primary: roc_auc
+  guardrails:
+  - average_precision
+  - log_loss
+outputs:
+  root: outputs
+feature_policy: base
+policy:
+  type: single_model
+  status: real_materialization_completed
+  lift_threshold: 5.0e-05
+  selected_roc_auc: 0.942244
+  lift_over_best_single: 0.0
+  best_single_candidate_id: lightgbm_hpo_trial35
+  source_run_ids:
+  - lightgbm_hpo_trial35
+  analyzed_candidate_ids:
+  - catboost_hpo_trial22
+  - lightgbm_hpo_trial35
+  winning_weights:
+    catboost_hpo_trial22: 0.0
+    lightgbm_hpo_trial35: 1.0
+  components:
+    catboost_hpo_trial22:
+      run_id: catboost_hpo_trial22
+      candidate_id: catboost_hpo_trial22
+      candidate_metadata_path: outputs/ensemble/candidates/catboost_hpo_trial22/candidate_metadata.json
+      model_family: catboost
+      tuning_study: catboost_hpo
+      trial_number: 22
+      params:
+        iterations: 950
+        depth: 4
+        learning_rate: 0.19422040188827575
+        l2_leaf_reg: 8.374807061522738
+        subsample: 0.8396231473319324
+        random_strength: 2.2197305984914815
+      seed_policy:
+        base_seed: 42
+        formula: base_seed + repeat * 100 + fold
+      feature_policy: base
+      provenance:
+        data_sha256: 169e0aee03673611f12f2f24afba67399e0038279c049a15a5db67e952afee46
+        split_sha256: b554570edc0bbcd20436e37d6aa4c9cad0dfc8242d3beef7815db32a93a8adee
+      weight: 0.0
+    lightgbm_hpo_trial35:
+      run_id: lightgbm_hpo_trial35
+      candidate_id: lightgbm_hpo_trial35
+      candidate_metadata_path: outputs/ensemble/candidates/lightgbm_hpo_trial35/candidate_metadata.json
+      model_family: lightgbm
+      tuning_study: lightgbm_hpo
+      trial_number: 35
+      params:
+        n_estimators: 450
+        learning_rate: 0.1848345569448026
+        num_leaves: 52
+        max_depth: 3
+        min_child_samples: 35
+        subsample: 0.9306965511287506
+        colsample_bytree: 0.8547723720552465
+        reg_alpha: 0.02695387132938999
+        reg_lambda: 0.003131021482784144
+      seed_policy:
+        base_seed: 42
+        formula: base_seed + repeat * 100 + fold
+      feature_policy: base
+      provenance:
+        data_sha256: 169e0aee03673611f12f2f24afba67399e0038279c049a15a5db67e952afee46
+        split_sha256: b554570edc0bbcd20436e37d6aa4c9cad0dfc8242d3beef7815db32a93a8adee
+      weight: 1.0
+  split_sha256: b554570edc0bbcd20436e37d6aa4c9cad0dfc8242d3beef7815db32a93a8adee
+  data_sha256: 169e0aee03673611f12f2f24afba67399e0038279c049a15a5db67e952afee46
