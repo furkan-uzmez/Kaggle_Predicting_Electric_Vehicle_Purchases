@@ -1,10 +1,5 @@
 # ruff: noqa: E501
-"""Generate the decision notebooks as markdown/code cell pairs.
-
-The notebooks orchestrate tested ``src/ev_purchase`` modules; they never
-reimplement pipeline logic. Every code cell is preceded by a markdown cell so
-``tests/test_notebooks.py`` can enforce the narrative contract.
-"""
+"""Build and export project decision notebooks from single-source python lists."""
 
 from pathlib import Path
 
@@ -12,19 +7,15 @@ import nbformat
 
 
 def _notebook(pairs: list[tuple[str, str]]) -> nbformat.NotebookNode:
-    """Build a notebook where every code cell follows a markdown cell."""
-    notebook = nbformat.v4.new_notebook()
-    cells: list[nbformat.NotebookNode] = []
-    for markdown, code in pairs:
-        cells.append(nbformat.v4.new_markdown_cell(markdown.strip()))
-        if code.strip():
-            cells.append(nbformat.v4.new_code_cell(code.strip()))
-    notebook.cells = cells
-    notebook.metadata = {
-        "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-        "language_info": {"name": "python"},
-    }
-    return notebook
+    nb = nbformat.v4.new_notebook()
+    cells = []
+    for md, code in pairs:
+        if md:
+            cells.append(nbformat.v4.new_markdown_cell(md))
+        if code:
+            cells.append(nbformat.v4.new_code_cell(code))
+    nb.cells = cells
+    return nb
 
 
 NB01: list[tuple[str, str]] = [
@@ -44,7 +35,7 @@ Predict `Will_Buy_EV` for each `id` in the test set.
   split manifest.
 
 Every numeric claim below is produced by the cell directly above it.""",
-        "",
+        """""",
     ),
     (
         """## Setup and path resolution
@@ -103,7 +94,7 @@ print("schema contract: OK")""",
   remapping is needed or permitted.
 - **Action:** encode the target explicitly with `encode_target` and keep the
   string labels out of every downstream model input.""",
-        "",
+        """""",
     ),
     (
         """## Feature-role map
@@ -134,7 +125,7 @@ role_map""",
   plus encoding while gradient-boosted trees can consume categories natively.
 - **Action:** keep two model paths - a linear baseline behind a preprocessor and
   GBDTs with native categorical handling.""",
-        "",
+        """""",
     ),
     (
         """## Data quality audit
@@ -170,7 +161,7 @@ dominance""",
   leakage between train and test, and no degenerate column to drop.
 - **Action:** skip imputation-driven feature engineering, but keep the imputers
   in the pipeline as a defensive contract for future data drift.""",
-        "",
+        """""",
     ),
     (
         """## Target prevalence
@@ -195,7 +186,7 @@ print(f"majority-class accuracy floor: {1 - positive_rate:.4%}")""",
   and probability calibration matter instead.
 - **Action:** keep ROC-AUC as the primary metric and report PR-AUC and LogLoss
   as guardrails, exactly as the design specifies.""",
-        "",
+        """""",
     ),
     (
         """## Numeric diagnostics
@@ -217,7 +208,7 @@ numeric_summary.sort_values("corr_with_target", ascending=False)""",
   no single numeric column looks like a target proxy.
 - **Action:** standardise numerics for the linear baseline only, and rely on the
   cross-validated comparison rather than these univariate signals.""",
-        "",
+        """""",
     ),
     (
         """## Categorical diagnostics
@@ -250,7 +241,7 @@ categorical_summary""",
   columns with the widest spread carry the most univariate signal.
 - **Action:** use plain one-hot encoding for the linear baseline; no target
   encoding is required, which removes a common leakage source.""",
-        "",
+        """""",
     ),
     (
         """## Train/test distribution shift
@@ -285,13 +276,88 @@ pd.DataFrame(shift_rows).sort_values("abs_mean_diff", ascending=False)""",
     (
         """### Observation / Interpretation / Action
 
-- **Observation:** the largest absolute train/test discrepancy across all
-  predictors is the top row above.
-- **Interpretation:** the two splits look like samples from the same generating
-  process, so an honest local CV score should track the leaderboard.
-- **Action:** trust cross-validation for model selection and do not tune against
-  leaderboard feedback.""",
-        "",
+- **Observation:** the univariate train/test difference summary is sorted above
+  by maximum absolute mean discrepancy for numerics and category proportions.
+- **Interpretation:** univariate summaries provide screening only and cannot
+  detect joint or multivariate distribution shifts between train and test.
+- **Action:** multivariate adversarial validation below determines whether
+  detectable shift warrants investigation before finalizing the validation strategy.""",
+        """""",
+    ),
+    (
+        """## Adversarial validation
+
+Evaluate multivariate train-vs-test domain shift using a 5-fold StratifiedKFold LightGBM classifier.
+The domain label is `0` for train and `1` for test. Identifier and true target columns are strictly
+excluded to eliminate trivial leakage. Preprocessing (handling categoricals) is fitted inside each
+training fold only, preventing cross-fold leakage.""",
+        """from ev_purchase.adversarial_validation import (
+    compute_file_sha256,
+    run_adversarial_validation,
+)
+
+# Strict exclusion assertion: drop id and target from predictors
+_train_features = train_df.drop(columns=[config.data.id_column, config.data.target_column])
+assert config.data.id_column not in _train_features.columns
+assert config.data.target_column not in _train_features.columns
+
+# Compute real dataset SHA256 hashes to guarantee provenance in persisted artifacts
+train_sha = compute_file_sha256(config.data.train)
+test_sha = compute_file_sha256(config.data.test)
+data_sha256 = {
+    "train_sha256": train_sha,
+    "test_sha256": test_sha,
+}
+
+artifacts_dir = PROJECT_ROOT / "outputs" / "diagnostics"
+adversarial_res = run_adversarial_validation(
+    train_df=train_df,
+    test_df=test_df,
+    id_column=config.data.id_column,
+    target_column=config.data.target_column,
+    n_splits=5,
+    random_state=SEED,
+    artifacts_dir=artifacts_dir,
+    data_sha256=data_sha256,
+)
+
+oof_domain_preds = adversarial_res.oof_domain_preds
+top_features = adversarial_res.feature_importance.head(10)
+
+print("adversarial validation metrics:")
+for k, v in adversarial_res.metrics.items():
+    if isinstance(v, float):
+        print(f"  {k}: {v:.6f}")
+    else:
+        print(f"  {k}: {v}")
+
+print()
+print("top 10 shift features (fold-averaged importance):")
+print(top_features.to_string(index=False))
+
+print()
+print("=== Adversarial Validation Diagnostic Findings ===")
+print(f"shift band: {adversarial_res.interpretation['shift_band']}")
+print(f"summary:    {adversarial_res.interpretation['summary']}")
+print(f"action:     {adversarial_res.interpretation['action']}")
+print(f"caveats:    {adversarial_res.interpretation['caveats']}")
+
+print()
+print("persisted diagnostic artifacts:")
+print(f"  adversarial_validation.json: {(artifacts_dir / 'adversarial_validation.json').exists()}")
+print(f"  adversarial_fold_metrics.csv: {(artifacts_dir / 'adversarial_fold_metrics.csv').exists()}")
+print(f"  adversarial_feature_importance.csv: {(artifacts_dir / 'adversarial_feature_importance.csv').exists()}")""",
+    ),
+    (
+        """### Observation / Interpretation / Action
+
+- **Observation:** inspect the 5-fold cross-validated domain ROC-AUC, PR-AUC, LogLoss, and fold-averaged feature importances printed above from `adversarial_res`.
+- **Interpretation Bands (Diagnostic Heuristic):**
+  - **ROC-AUC <= 0.55 (Little detectable shift):** domain classifier cannot meaningfully distinguish train from test predictors; covariate shift is minimal under this model family.
+  - **0.55 < ROC-AUC <= 0.60 (Mild shift):** subtle distributional divergence in one or more features; warrants monitoring leaderboard alignment.
+  - **ROC-AUC > 0.60 (Material diagnostic shift):** domain origin is reliably predictable from features; local validation splits may systematically diverge from test evaluation without adjustment.
+- **Action Guidance:** follow the dynamically recommended action printed above for the current run's observed shift band before freezing the validation strategy.""",
+        """""",
     ),
     (
         """## Leakage audit
@@ -320,7 +386,7 @@ print("id column present in predictors:", id_col in predictors.columns)""",
   comes from how we fit preprocessing, not from the raw columns.
 - **Action:** fit every transformer inside the training fold only, which the
   training engine already enforces.""",
-        "",
+        """""",
     ),
     (
         """## Repeated cross-validation rationale
@@ -346,7 +412,7 @@ print("rows covered:", per_row.shape[0], "of", len(train_df))""",
   fold-assignment noise, which matters when comparing close candidates.
 - **Action:** score every experiment on this manifest so runs stay comparable,
   and reject any run whose split hash differs.""",
-        "",
+        """""",
     ),
     (
         """## Decision ledger
@@ -396,10 +462,9 @@ deferred""",
   and free of obvious leakage, so modelling can start immediately.
 - **Action:** hand off to Notebook 02 to register baselines and define the
   experiment matrix.""",
-        "",
+        """""",
     ),
 ]
-
 
 NB02: list[tuple[str, str]] = [
     (
@@ -415,7 +480,7 @@ NB02: list[tuple[str, str]] = [
 
 This notebook runs smoke-scale checks only. Full cross-validation runs happen
 through the training script, never inside a notebook cell.""",
-        "",
+        """""",
     ),
     (
         """## Setup
@@ -491,7 +556,7 @@ print("train/validation overlapping rows across all folds:", overlaps)""",
   reflects the model rather than the split.
 - **Action:** treat this manifest as immutable and compare runs only when their
   split hash matches.""",
-        "",
+        """""",
     ),
     (
         """## Baseline registry
@@ -559,7 +624,7 @@ print("id/target guard:", leakage_guard)""",
   statistics, and it cannot be fed the identifier or the label.
 - **Action:** keep fitting per fold inside `run_cross_validation` and never
   pre-fit a shared transformer.""",
-        "",
+        """""",
     ),
     (
         """## Smoke-scale sanity check
@@ -593,7 +658,7 @@ smoke_results""",
   real signal; a broken pipeline would leave logistic at the floor.
 - **Action:** proceed to full runs through the training script. These
   smoke numbers are never reported as cross-validated results.""",
-        "",
+        """""",
     ),
     (
         """## Experiment matrix
@@ -653,10 +718,9 @@ them. It must:
   fields, from any cross-validated comparison,
 - rank candidates on ROC-AUC while reporting PR-AUC and LogLoss guardrails,
 - select the model family carried into the Notebook 04 tuning stage.""",
-        "",
+        """""",
     ),
 ]
-
 
 NB03: list[tuple[str, str]] = [
     (
@@ -672,7 +736,7 @@ Analyze completed baseline runs from persisted run artifacts in `outputs/runs`.
 - Execution mode: read persisted artifacts only; no training or HPO executed in notebook cells.
 
 Every numeric claim below is produced by the cell directly above it.""",
-        "",
+        """""",
     ),
     (
         """## 1. Artifact compatibility audit
@@ -736,7 +800,7 @@ audit_df""",
 - **Observation:** all completed runs listed in the table above passed the compatibility assertion, sharing exact dataset and split hashes.
 - **Interpretation:** all metrics and OOF predictions are directly comparable across candidate models without protocol mismatch.
 - **Action:** proceed with cross-model comparative analysis on these verified completed runs.""",
-        "",
+        """""",
     ),
     (
         """## 2. Baseline leaderboard
@@ -777,7 +841,7 @@ leaderboard_df""",
 - **Observation:** the leaderboard table and figure above show the relative OOF ROC-AUC rankings across all evaluated models.
 - **Interpretation:** the observed metrics place every gradient boosting model above the dummy floor and logistic baseline.
 - **Action:** analyze stability across cross-validation repeats and folds to verify performance consistency.""",
-        "",
+        """""",
     ),
     (
         """## 3. Repeat and fold stability
@@ -810,7 +874,7 @@ stability_df""",
 - **Observation:** the stability table above summarizes the mean, standard deviation, and range of ROC-AUC across the persisted folds.
 - **Interpretation:** the observed dispersion is small relative to the model-to-floor gaps; close finalists still require paired comparison.
 - **Action:** examine paired fold-level deltas to evaluate whether model improvements are statistically consistent across all folds.""",
-        "",
+        """""",
     ),
     (
         """## 4. Paired fold deltas
@@ -859,7 +923,7 @@ delta_df""",
 - **Observation:** the paired fold delta table above presents performance gains relative to the reference model across aligned folds.
 - **Interpretation:** each GBDT has positive observed deltas in every aligned fold; this is descriptive evidence, not a significance test.
 - **Action:** document ablation status before validating OOF probability aggregations.""",
-        "",
+        """""",
     ),
     (
         """## 5. Ablation ledger
@@ -892,7 +956,7 @@ ablation_ledger""",
 - **Observation:** as detailed in the ledger above, specific feature and imbalance ablations are marked as deferred.
 - **Interpretation:** baseline evaluations reflect default feature policies; unexecuted experiments are explicitly logged without fabrication.
 - **Action:** proceed to recomputing OOF metrics from persisted prediction files to verify metric integrity.""",
-        "",
+        """""",
     ),
     (
         """## 6. Recompute OOF metrics from persisted predictions
@@ -943,7 +1007,7 @@ recompute_df""",
 - **Observation:** recomputed OOF metrics match the logged aggregate metrics for all models as shown in the table above.
 - **Interpretation:** OOF aggregation logic is verified, and the persisted prediction files accurately represent full out-of-fold predictions.
 - **Action:** perform error diagnostic analysis on high-confidence predictions using the top finalist model.""",
-        "",
+        """""",
     ),
     (
         """## 7. High-confidence error diagnostic
@@ -985,7 +1049,7 @@ for col in numeric_cols:
 feature_slice_df = pd.DataFrame(feature_stats)
 print(f"finalist ({finalist_name}) confusion matrix breakdown:")
 print(slice_summary.to_string())
-print("\\nfeature means across confusion matrix slices:")
+print("\nfeature means across confusion matrix slices:")
 feature_slice_df""",
     ),
     (
@@ -994,7 +1058,7 @@ feature_slice_df""",
 - **Observation:** confusion matrix slice counts and feature mean breakdowns for the top model are presented in the tables above.
 - **Interpretation:** the aggregate means expose descriptive differences between error slices without establishing causality.
 - **Action:** examine missingness and feature-range cohort behavior across numeric predictors.""",
-        "",
+        """""",
     ),
     (
         """## 8. Feature cohort analysis
@@ -1033,7 +1097,7 @@ cohort_df""",
 - **Observation:** error metrics and predicted probabilities across feature quartile cohorts are displayed in the table above.
 - **Interpretation:** cohort LogLoss varies with prevalence and feature range; the table is diagnostic and does not establish subgroup parity.
 - **Action:** assess prediction and error correlations across candidate models to evaluate ensembling potential.""",
-        "",
+        """""",
     ),
     (
         """## 9. Prediction and error correlation
@@ -1046,7 +1110,7 @@ error_corr = abs_errors_df.corr()
 
 print("OOF prediction correlation matrix:")
 print(pred_corr.to_string())
-print("\\nOOF error correlation matrix:")
+print("\nOOF error correlation matrix:")
 print(error_corr.to_string())
 
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
@@ -1077,7 +1141,7 @@ pred_corr""",
 - **Observation:** prediction and error correlation matrices are printed and plotted above.
 - **Interpretation:** high correlation among GBDTs indicates similar decision boundaries, while differences in error patterns support potential blending.
 - **Action:** log the feature importance and interpretability audit status.""",
-        "",
+        """""",
     ),
     (
         """## 10. Permutation and SHAP audit
@@ -1107,7 +1171,7 @@ shap_audit""",
 - **Observation:** feature importance and SHAP artifacts are recorded as unavailable in the table above.
 - **Interpretation:** SHAP and permutation analyses were not persisted in baseline runs; synthetic or estimated SHAP values are avoided.
 - **Action:** define model efficiency and runtime complexity tradeoffs in the runtime gate table.""",
-        "",
+        """""",
     ),
     (
         """## 11. Runtime and complexity gate
@@ -1130,7 +1194,7 @@ gate_df[["model", "roc_auc", "roc_auc_delta", "runtime_seconds", "runtime_ratio"
 - **Observation:** runtime ratios, ROC-AUC deltas, and efficiency scores are listed in the table above.
 - **Interpretation:** the candidates trade small ROC-AUC differences against materially different runtimes; no single runtime is assumed acceptable.
 - **Action:** lock finalists and record rejected candidates for downstream HPO.""",
-        "",
+        """""",
     ),
     (
         """## 12. Finalist lock and rejected candidates
@@ -1173,7 +1237,7 @@ rejected_ledger = pd.DataFrame(
 
 print("finalist lock:")
 print(finalist_lock.to_string())
-print("\\nrejected candidates ledger:")
+print("\nrejected candidates ledger:")
 rejected_ledger""",
     ),
     (
@@ -1182,10 +1246,9 @@ rejected_ledger""",
 - **Observation:** co-finalists and rejected candidates are locked in the tables above.
 - **Interpretation:** CatBoost and XGBoost (or LightGBM) are selected as co-finalists for downstream hyperparameter optimization (Notebook 04).
 - **Action:** proceed with bounded HPO experiments using the locked finalist model families.""",
-        "",
+        """""",
     ),
 ]
-
 
 NB04: list[tuple[str, str]] = [
     (
@@ -1260,7 +1323,7 @@ entry_df""",
 - **Observation:** the baseline entry table above shows candidate model performance on the 15-fold baseline protocol.
 - **Interpretation:** CatBoost and LightGBM entered hyperparameter optimization as co-finalists based on top baseline ROC-AUC scores.
 - **Action:** proceed to audit the execution budget and stop rules of the HPO studies.""",
-        "",
+        """""",
     ),
     (
         """## 2. HPO budget and stop-rule audit
@@ -1298,7 +1361,7 @@ audit_meta_df""",
 - **Observation:** the HPO audit table above displays executed trial counts, target budgets, timeout settings, and stop reasons for each study.
 - **Interpretation:** CatBoost reached its 10,800-second (3-hour) timeout budget after completing 35 trials, whereas LightGBM completed all planned target trials within budget.
 - **Action:** inspect trial states and search-fold ROC-AUC scores across the executed trial inventory.""",
-        "",
+        """""",
     ),
     (
         """## 3. Study and trial inventory
@@ -1334,7 +1397,7 @@ inventory_df""",
 - **Observation:** the trial inventory table above summarizes trial state counts and search-fold ROC-AUC maxima for both studies.
 - **Interpretation:** LightGBM executed 40 total trials (29 COMPLETED, 10 PRUNED, and 1 FAIL recovered from a stale state), while CatBoost executed 35 trials (27 COMPLETED and 8 PRUNED).
 - **Action:** analyze hyperparameter sensitivity and performance diagnostics across executed trials.""",
-        "",
+        """""",
     ),
     (
         """## 4. Parameter-performance diagnostics
@@ -1366,7 +1429,7 @@ top_lgb_params = lgb_comp.sort_values("value", ascending=False).head(3)[
 
 print("top 3 CatBoost search trials:")
 print(top_cb_params.to_string(index=False))
-print("\\ntop 3 LightGBM search trials:")
+print("\ntop 3 LightGBM search trials:")
 print(top_lgb_params.to_string(index=False))""",
     ),
     (
@@ -1375,7 +1438,7 @@ print(top_lgb_params.to_string(index=False))""",
 - **Observation:** scatter plots and parameter tables above detail the relationships between learning rate and search ROC-AUC scores.
 - **Interpretation:** moderate learning rates coupled with controlled tree depth/leaves yielded the strongest search validation scores.
 - **Action:** evaluate the top finalists on the full 15-fold cross-validation protocol.""",
-        "",
+        """""",
     ),
     (
         """## 5. Full-protocol finalist comparison
@@ -1410,7 +1473,7 @@ finalists_df""",
 - **Observation:** the finalist comparison table above ranks top candidates on their 15-fold tuning rerun metrics (`finalist_rerun_roc_auc`).
 - **Interpretation:** LightGBM trial 35 achieved the top tuning rerun ROC-AUC among LightGBM candidates, while CatBoost trial 22 was the top CatBoost candidate.
 - **Action:** analyze fold-level stability across all 15 validation folds.""",
-        "",
+        """""",
     ),
     (
         """## 6. Fold and repeat stability
@@ -1447,7 +1510,7 @@ stability_df""",
 - **Observation:** fold-level summary statistics across all 15 validation folds are presented in the stability table above.
 - **Interpretation:** standard deviations and range statistics reflect the observed variation across validation folds for both candidates under the single base seed protocol.
 - **Action:** perform a key-aligned out-of-fold prediction and absolute error correlation analysis.""",
-        "",
+        """""",
     ),
     (
         """## 7. Keyed OOF prediction and absolute error correlation
@@ -1497,7 +1560,7 @@ corr_summary = pd.DataFrame(
 
 print("independently rematerialized keyed OOF metrics:")
 print(remat_summary.to_string(index=False))
-print("\\nprediction and absolute error correlation:")
+print("\nprediction and absolute error correlation:")
 corr_summary""",
     ),
     (
@@ -1506,7 +1569,7 @@ corr_summary""",
 - **Observation:** the tables above report independently rematerialized keyed OOF metrics and prediction / absolute error correlations between the top finalists.
 - **Interpretation:** high prediction correlation and absolute error correlation indicate strong structural alignment and limited error diversity between CatBoost trial 22 and LightGBM trial 35.
 - **Action:** evaluate the finite ensemble blend leaderboard.""",
-        "",
+        """""",
     ),
     (
         """## 8. Finite blend leaderboard
@@ -1536,7 +1599,7 @@ blend_summary""",
 - **Observation:** the blend leaderboard table above details the candidate blend configurations ranked by OOF ROC-AUC.
 - **Interpretation:** while blended combinations produce minor numerical ROC-AUC variations over the single-model baseline, every blend candidate must be evaluated against the lift threshold.
 - **Action:** inspect prediction decile tails and feature cohort diagnostics for the top single model.""",
-        "",
+        """""",
     ),
     (
         """## 9. Tail and cohort guardrails
@@ -1594,7 +1657,7 @@ cohort_df = pd.DataFrame(cohort_rows)
 
 print("prediction decile tail diagnostics:")
 print(tail_df.to_string(index=False))
-print("\\nfeature quartile cohort diagnostics:")
+print("\nfeature quartile cohort diagnostics:")
 cohort_df""",
     ),
     (
@@ -1603,7 +1666,7 @@ cohort_df""",
 - **Observation:** the prediction decile and feature quartile tables above present descriptive performance and calibration metrics across subsets.
 - **Interpretation:** subgroup metrics vary across probability deciles and feature ranges; these tables serve as descriptive diagnostics rather than formal hypothesis tests.
 - **Action:** evaluate the complexity decision regarding single model versus ensemble deployment.""",
-        "",
+        """""",
     ),
     (
         """## 10. Complexity decision
@@ -1637,7 +1700,7 @@ complexity_df""",
 - **Observation:** the complexity evaluation table above compares the maximum observed blend lift to the required policy threshold.
 - **Interpretation:** because maximum observed blend lift does not meet the policy threshold (5.0e-05), ensemble complexity is not justified.
 - **Action:** lock single model `lightgbm_hpo_trial35` as the final production selection.""",
-        "",
+        """""",
     ),
     (
         """## 11. Final locked winner decision
@@ -1664,7 +1727,7 @@ winner_summary_df = pd.DataFrame(summary_rows)
 print("locked final production policy summary:")
 print(winner_summary_df.to_string(index=False))
 
-print("\\nwinning LightGBM hyperparameters:")
+print("\nwinning LightGBM hyperparameters:")
 lgb_params = pol.get("components", {}).get("lightgbm_hpo_trial35", {}).get("params", {})
 for k, v in lgb_params.items():
     print(f"  {k}: {v}")""",
@@ -1675,10 +1738,9 @@ for k, v in lgb_params.items():
 - **Observation:** the locked final production policy summary and hyperparameter values are displayed above.
 - **Interpretation:** `lightgbm_hpo_trial35` is locked as the final production winner, fully specified with deterministic seed policy, feature policy, and SHA-256 provenance hashes.
 - **Action:** proceed to final model retraining and submission pipeline execution.""",
-        "",
+        """""",
     ),
 ]
-
 
 NB05: list[tuple[str, str]] = [
     (
@@ -1752,7 +1814,7 @@ exec_summary_df""",
 - **Observation:** the executive summary table above displays the locked single-model production policy (`lightgbm_hpo_trial35`), cross-validation ROC-AUC score, and provenance SHA-256 hashes.
 - **Interpretation:** `lightgbm_hpo_trial35` was selected for production because the maximum observed ensemble blend lift fell short of the policy required threshold (`5.0e-05`).
 - **Action:** review the formal task and dataset contract definitions.""",
-        "",
+        """""",
     ),
     (
         """## 2. Task and Data Contract
@@ -1788,7 +1850,7 @@ contract_summary_df""",
 - **Observation:** the data contract audit table above confirms raw target labels `No`/`Yes` encoded to binary integers `0`/`1` without schema violations.
 - **Interpretation:** dataset shapes and schemas match contract requirements, ensuring valid input structures for the retrained pipeline.
 - **Action:** verify the fixed split manifest and leakage prevention policy.""",
-        "",
+        """""",
     ),
     (
         """## 3. Fixed Split and Leakage Policy
@@ -1820,7 +1882,7 @@ split_policy_df""",
 - **Observation:** the split manifest audit table above confirms deterministic 5-fold x 3-repeat stratification with 15 validation folds and uniform row coverage.
 - **Interpretation:** identical split hash across all candidate evaluations guarantees honest, leakage-free cross-validated comparisons.
 - **Action:** examine the baseline candidate comparison matrix.""",
-        "",
+        """""",
     ),
     (
         """## 4. Baseline Comparison
@@ -1866,7 +1928,7 @@ baseline_df""",
 - **Observation:** the baseline leaderboard table and plot above summarize OOF ROC-AUC, PR-AUC, LogLoss, and runtime across initial baseline candidate models.
 - **Interpretation:** gradient-boosted tree models outperformed the dummy no-skill floor and linear reference model by a wide margin.
 - **Action:** inspect the selected model pipeline and source run provenance.""",
-        "",
+        """""",
     ),
     (
         """## 5. Selected Pipeline and Source Run IDs
@@ -1920,7 +1982,7 @@ pipeline_df""",
 - **Observation:** the pipeline specification table above details the hyperparameter configuration and provenance for `lightgbm_hpo_trial35`.
 - **Interpretation:** the selected LightGBM candidate uses bounded tree depth (`max_depth=3`, `num_leaves=52`), learning rate (`0.1848`), and feature sampling (`colsample_bytree=0.8548`).
 - **Action:** present the 15-fold cross-validation metric evidence.""",
-        "",
+        """""",
     ),
     (
         """## 6. 15-Fold Cross-Validation Metric Evidence
@@ -1940,7 +2002,7 @@ fold_metrics_summary = pd.DataFrame(
 
 print("15-fold cross-validation aggregate metric evidence:")
 print(fold_metrics_summary.to_string(index=False))
-print("\\n15-fold detail table:")
+print("\n15-fold detail table:")
 t35_df[["repeat", "fold", "roc_auc", "average_precision", "log_loss", "runtime_seconds"]]""",
     ),
     (
@@ -1949,7 +2011,7 @@ t35_df[["repeat", "fold", "roc_auc", "average_precision", "log_loss", "runtime_s
 - **Observation:** the 15-fold metric table above displays fold-level ROC-AUC, PR-AUC, LogLoss, and runtime across all 15 validation folds.
 - **Interpretation:** the selected model maintains high validation performance across all repeats and folds.
 - **Action:** evaluate fold and repeat stability.""",
-        "",
+        """""",
     ),
     (
         """## 7. Repeat and Fold Stability
@@ -1979,7 +2041,7 @@ repeat_stability_df""",
 - **Observation:** the repeat stability table above details mean and standard deviation of validation metrics across repeats 0, 1, and 2.
 - **Interpretation:** low variance across repeats demonstrates that performance is consistent across fold split initializations.
 - **Action:** examine error diagnostics, prediction deciles, and feature cohort findings.""",
-        "",
+        """""",
     ),
     (
         """## 8. Error, Prediction Decile, and Feature Cohort Findings
@@ -2038,7 +2100,7 @@ cohort_df = pd.DataFrame(cohort_rows)
 
 print("prediction decile tail diagnostics:")
 print(tail_df.to_string(index=False))
-print("\\nfeature quartile cohort diagnostics:")
+print("\nfeature quartile cohort diagnostics:")
 print(cohort_df.to_string(index=False))""",
     ),
     (
@@ -2047,7 +2109,7 @@ print(cohort_df.to_string(index=False))""",
 - **Observation:** the decile calibration and feature cohort diagnostic tables above display observed positive rates, mean predicted probabilities, LogLoss, and Brier scores across subgroups; no SHAP artifacts were persisted.
 - **Interpretation:** prediction calibration remains well-behaved across deciles and feature cohorts, serving as descriptive diagnostics of model behavior.
 - **Action:** review the advanced experiment, HPO, and blending decision.""",
-        "",
+        """""",
     ),
     (
         """## 9. Advanced Experiments, HPO, and Blending Decision
@@ -2090,7 +2152,7 @@ decision_summary_df""",
 - **Observation:** the persisted decision summary table above displays the stored policy metrics and asserts internal consistency between the lift threshold and selected policy type.
 - **Interpretation:** because the persisted lift over the best single model is below the required threshold (`5.0e-05`), the single model policy selection is verified as internally consistent.
 - **Action:** evaluate runtime efficiency and model complexity tradeoffs.""",
-        "",
+        """""",
     ),
     (
         """## 10. Runtime and Model Complexity Tradeoffs
@@ -2110,7 +2172,7 @@ runtime_summary_df = pd.DataFrame(runtime_rows).sort_values("runtime_seconds").r
 
 print("available baseline runtimes:")
 print(runtime_summary_df.to_string(index=False))
-print("\\nnote: dedicated blend pipeline training runtime evidence was not persisted.")""",
+print("\nnote: dedicated blend pipeline training runtime evidence was not persisted.")""",
     ),
     (
         """### Observation / Interpretation / Action
@@ -2118,7 +2180,7 @@ print("\\nnote: dedicated blend pipeline training runtime evidence was not persi
 - **Observation:** the runtime summary table above reports the available execution times for baseline models; dedicated ensemble blend training runtime evidence was not persisted.
 - **Interpretation:** baseline runtimes demonstrate that tree models execute quickly, supporting the computational efficiency of the selected single-model approach.
 - **Action:** document model limitations and boundary conditions.""",
-        "",
+        """""",
     ),
     (
         """## 11. Model Limitations and Operational Boundary Conditions
@@ -2141,7 +2203,7 @@ limitations_df""",
 - **Observation:** the operational limitations ledger above highlights dataset boundaries, drift vulnerabilities, and mitigation controls.
 - **Interpretation:** while model performance is strong on historical CV splits, monitoring input distributions and prediction calibration in production remains essential.
 - **Action:** validate final submission file integrity and SHA-256 checksums.""",
-        "",
+        """""",
     ),
     (
         """## 12. Final Submission File Validation and Checksum
@@ -2206,7 +2268,7 @@ sub_validation_df""",
 - **Observation:** the submission validation table above displays the actual file checks and confirms all fail-closed assertions passed, matching the persisted validation report.
 - **Interpretation:** the submission file is fully validated, finite, correctly ordered, and ready for competition submission.
 - **Action:** review the CLI reproducibility commands.""",
-        "",
+        """""",
     ),
     (
         """## 13. Reproducibility Commands and Handoff
@@ -2237,22 +2299,15 @@ for cmd in repro_commands:
 - **Observation:** the shell command inventory above lists all pipeline execution steps from data validation to final submission generation.
 - **Interpretation:** the complete workflow is fully automated, deterministic under seed 42, and reproducibly executable via standard CLI tools.
 - **Action:** final competition submission and report handoff complete.""",
-        "",
+        """""",
     ),
 ]
 
 
 def main() -> None:
-    """Write notebooks to the repository ``notebooks`` directory."""
     import argparse
-
     parser = argparse.ArgumentParser(description="Generate decision notebooks.")
-    parser.add_argument(
-        "--notebook",
-        type=str,
-        default=None,
-        help="Specific notebook to build (e.g. 04_advanced_experiments or 04)",
-    )
+    parser.add_argument("--notebook", type=str, default=None)
     args = parser.parse_args()
 
     notebooks_dir = Path(__file__).resolve().parents[1] / "notebooks"
@@ -2268,14 +2323,10 @@ def main() -> None:
 
     if args.notebook:
         query = args.notebook.strip()
-        matched_targets = {
-            k: v
-            for k, v in targets.items()
-            if query == k or query == k.replace(".ipynb", "") or k.startswith(query)
-        }
-        if not matched_targets:
-            raise ValueError(f"Unknown notebook query '{args.notebook}'. Choose from: {list(targets.keys())}")
-        targets_to_build = matched_targets
+        matched = {k: v for k, v in targets.items() if query == k or query == k.replace(".ipynb", "") or k.startswith(query)}
+        if not matched:
+            raise ValueError(f"Unknown query {args.notebook}")
+        targets_to_build = matched
     else:
         targets_to_build = targets
 
@@ -2283,7 +2334,6 @@ def main() -> None:
         destination = notebooks_dir / filename
         nbformat.write(_notebook(pairs), destination)
         print("wrote", destination.relative_to(notebooks_dir.parent))
-
 
 if __name__ == "__main__":
     main()
