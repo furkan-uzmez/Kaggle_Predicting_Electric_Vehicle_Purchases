@@ -213,7 +213,14 @@ def test_unregister_and_reset_feature_policies() -> None:
 
     register_feature_policy("temp_p2", policy1)
     reset_feature_policies()
-    assert list_feature_policies() == ["base"]
+    expected_policies = [
+        "advanced_engineered",
+        "advanced_v2",
+        "base",
+        "engineered",
+        "selected",
+    ]
+    assert list_feature_policies() == expected_policies
 
 
 def test_cannot_unregister_or_clobber_built_in_base_policy() -> None:
