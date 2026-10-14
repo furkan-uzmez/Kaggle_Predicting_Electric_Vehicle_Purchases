@@ -1,6 +1,9 @@
 [project]
 name = "ev-purchase"
 version = "0.1.0"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "catboost>=1.2.8",
