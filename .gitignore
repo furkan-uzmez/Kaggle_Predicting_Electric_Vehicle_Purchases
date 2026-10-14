@@ -14,6 +14,11 @@ build/
 .claude/
 skill-observations/
 commit_history/
+/docs/
+/kaggle_competation_pages/
+/.playwright-mcp/
+/leaderboard.md
+/AGENTS.md
 
 # Local datasets and generated experiment artifacts
 data/
